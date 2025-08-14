@@ -1,148 +1,97 @@
 pipeline {
     agent any
-    
     tools {
         jdk 'jdk17'
         maven 'maven3'
     }
-
     environment {
-        SCANNER_HOME= tool 'sonar-scanner'
+        SCANNER_HOME = tool 'sonar-scanner'
     }
-
     stages {
         stage('Git Checkout') {
             steps {
-               git branch: 'main', credentialsId: 'git-cred', url: 'https://github.com/ganeshperumal007/Boardgame.git'
+                git branch: 'main', credentialsId: 'git-cred', url: 'https://github.com/shrikant-devops/Boardgame.git'
             }
         }
-        
         stage('Compile') {
             steps {
                 sh "mvn compile"
             }
         }
-        
         stage('Test') {
             steps {
                 sh "mvn test"
             }
         }
-        
         stage('File System Scan') {
             steps {
                 sh "trivy fs --format table -o trivy-fs-report.html ."
             }
         }
-        
-        stage('SonarQube Analsyis') {
+        stage('SonarQube Analysis') {
             steps {
                 withSonarQubeEnv('sonar') {
-                    sh ''' $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=BoardGame -Dsonar.projectKey=BoardGame \
-                            -Dsonar.java.binaries=. '''
+                    sh '''
+                        $SCANNER_HOME/bin/sonar-scanner \
+                        -Dsonar.projectName=BoardGame \
+                        -Dsonar.projectKey=BoardGame \
+                        -Dsonar.java.binaries=target/classes
+                    '''
                 }
             }
         }
-        
-        stage('Quality Gate') {
-            steps {
-                script {
-                  waitForQualityGate abortPipeline: false, credentialsId: 'sonar-token' 
-                }
-            }
-        }
-        
         stage('Build') {
             steps {
-               sh "mvn package"
+                sh "mvn package"
             }
         }
-        
-        stage('Publish To Nexus') {
+        stage('Build & Tag Docker Image') {
             steps {
-               withMaven(globalMavenSettingsConfig: 'global-settings', jdk: 'jdk17', maven: 'maven3', mavenSettingsConfig: '', traceability: true) {
-                    sh "mvn deploy"
+                script {
+                    withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
+                        sh "docker build -t shrikantdevops/boardshack:latest ."
+                    }
                 }
             }
         }
-        
-        stage('Build & Tag Docker Image') {
-            steps {
-               script {
-                   withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
-                            sh "docker build -t ganeshperumal007/boardshack:latest ."
-                    }
-               }
-            }
-        }
-        
         stage('Docker Image Scan') {
             steps {
-                sh "trivy image --format table -o trivy-image-report.html ganeshperumal007/boardshack:latest "
+                sh "trivy image --format table -o trivy-image-report.html shrikantdevops/boardshack:latest"
             }
         }
-        
         stage('Push Docker Image') {
             steps {
-               script {
-                   withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
-                            sh "docker push ganeshperumal007/boardshack:latest"
+                script {
+                    withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
+                        sh "docker push shrikantdevops/boardshack:latest"
                     }
-               }
+                }
             }
         }
         stage('Deploy To Kubernetes') {
             steps {
-               withKubeConfig(caCertificate: '', clusterName: 'kubernetes', contextName: '', credentialsId: 'k8-cred', namespace: 'webapps', restrictKubeConfigAccess: false, serverUrl: 'https://172.31.0.56:6443') {
-                        sh "kubectl apply -f deployment-service.yaml"
+                withKubeConfig(
+                    clusterName: 'kubernetes',
+                    credentialsId: 'k8-cred',
+                    namespace: 'webapps',
+                    serverUrl: 'https://172.31.40.16:6443'
+                ) {
+                    sh "kubectl apply -f deployment-service.yaml --validate=false"
                 }
             }
         }
-        
         stage('Verify the Deployment') {
             steps {
-               withKubeConfig(caCertificate: '', clusterName: 'kubernetes', contextName: '', credentialsId: 'k8-cred', namespace: 'webapps', restrictKubeConfigAccess: false, serverUrl: 'https://172.31.0.56:6443') {
-                        sh "kubectl get pods -n webapps"
-                        sh "kubectl get svc -n webapps"
+                withKubeConfig(
+                    clusterName: 'kubernetes',
+                    credentialsId: 'k8-cred',
+                    namespace: 'webapps',
+                    serverUrl: 'https://172.31.40.16:6443'
+                ) {
+                    sh "kubectl get pods -n webapps"
+                    sh "kubectl get svc -n webapps"
                 }
             }
         }
-        
-        
     }
-    post {
-    always {
-        script {
-            def jobName = env.JOB_NAME
-            def buildNumber = env.BUILD_NUMBER
-            def pipelineStatus = currentBuild.result ?: 'UNKNOWN'
-            def bannerColor = pipelineStatus.toUpperCase() == 'SUCCESS' ? 'green' : 'red'
-
-            def body = """
-                <html>
-                <body>
-                <div style="border: 4px solid ${bannerColor}; padding: 10px;">
-                <h2>${jobName} - Build ${buildNumber}</h2>
-                <div style="background-color: ${bannerColor}; padding: 10px;">
-                <h3 style="color: white;">Pipeline Status: ${pipelineStatus.toUpperCase()}</h3>
-                </div>
-                <p>Check the <a href="${BUILD_URL}">console output</a>.</p>
-                </div>
-                </body>
-                </html>
-            """
-
-            emailext (
-                subject: "${jobName} - Build ${buildNumber} - ${pipelineStatus.toUpperCase()}",
-                body: body,
-                to: 'ganeshperumal882000@gmail.com',
-                from: 'jenkins@example.com',
-                replyTo: 'jenkins@example.com',
-                mimeType: 'text/html',
-                attachmentsPattern: 'trivy-image-report.html'
-            )
-        }
-    }
-}
-
 }
